@@ -1,11 +1,12 @@
 import masto from "masto";
+import { SignatureResponse } from "../types/signatureDefinition";
 
 /**
  * This signature detects a spam pattern where a status has more than 2 mentions,
  * the username is 10 characters long, the account was created less than 24 hours ago,
  * and the account has 0 followers.
  */
-export default function (status: masto.mastodon.streaming.UpdateEvent['payload']): { isSpam: boolean; reason?: string } {
+export default function (status: masto.mastodon.streaming.UpdateEvent['payload']): SignatureResponse {
   const mentions = status.mentions.length;
   const username = status.account.username;
   const followersCount = status.account.followersCount;
@@ -21,5 +22,9 @@ export default function (status: masto.mastodon.streaming.UpdateEvent['payload']
   return {
     isSpam,
     reason: isSpam ? reason : undefined,
+    actions: {
+      sendReport: true,
+      limitAccount: true,
+    }
   };
 }

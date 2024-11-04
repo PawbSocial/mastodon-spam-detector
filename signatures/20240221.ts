@@ -1,10 +1,11 @@
 import masto from "masto";
+import { SignatureResponse } from "../types/signatureDefinition";
 
 /**
  * This signature detects a spam pattern where mentions > 2 and
  * content includes https://荒らし.com/ or https://ctkpaarr.org/.
  */
-export default function (status: masto.mastodon.streaming.UpdateEvent['payload']): { isSpam: boolean; reason?: string } {
+export default function (status: masto.mastodon.streaming.UpdateEvent['payload']): SignatureResponse {
   const mentions = status.mentions.length;
 
   const isSpam =
@@ -17,5 +18,9 @@ export default function (status: masto.mastodon.streaming.UpdateEvent['payload']
   return {
     isSpam,
     reason: isSpam ? reason : undefined,
+    actions: {
+      sendReport: false,
+      suspendAccount: true,
+    }
   };
 }

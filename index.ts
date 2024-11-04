@@ -2,12 +2,18 @@ import { createStreamingAPIClient, createRestAPIClient } from "masto";
 import * as fs from 'fs';
 import * as path from 'path';
 import { config } from 'dotenv';
+import { SignatureDefinition } from "./types/signatureDefinition";
 
 config();
 
 const BaseUrl = process.env.BASE_URL;
 const streamingApiUrl = BaseUrl + '/api/v1/streaming';
 const accessToken = process.env.ACCESS_TOKEN;
+
+const DISABLE_SEND_REPORTS = process.env.DISABLE_SEND_REPORTS === 'true';
+const DISABLE_SUSPEND_ACCOUNTS = process.env.DISABLE_SUSPEND_ACCOUNTS === 'true';
+const DISABLE_LIMIT_ACCOUNTS = process.env.DISABLE_LIMIT_ACCOUNTS === 'true';
+const DISABLE_SIGNATURES = process.env.DISABLE_SIGNATURES?.split(',') || [];
 
 const showDebugLog = process.env.LOG_DEBUG === 'true';
 if (showDebugLog) {
@@ -23,17 +29,22 @@ if (showInfoLog) {
   console.info = () => { };
 }
 
-interface SpamSignature {
-  check: (status: any) => { isSpam: boolean; reason?: string; };
-  signatureName: string;
-}
-
-async function loadSignatureFiles(): Promise<SpamSignature[]> {
+async function loadSignatureFiles(): Promise<SignatureDefinition[]> {
   const signaturesDir = path.join(__dirname, 'signatures');
   const files = await fs.promises.readdir(signaturesDir);
   return files.map(file => {
     const moduleName = file.split('.').slice(0, -1).join('.');
+
+    if (DISABLE_SIGNATURES.includes(moduleName)) {
+      console.info(`Disabled signature: ${moduleName}`);
+      return {
+        check: () => ({ isSpam: false }),
+        signatureName: moduleName
+      };
+    }
+
     const signatureModule = require(path.join(signaturesDir, file));
+    console.info(`Loaded signature: ${moduleName}`);
     return {
       check: signatureModule.default,
       signatureName: moduleName
@@ -48,6 +59,10 @@ async function main() {
   }
 
   console.info('Mastodon spam detecter started.');
+
+  if (DISABLE_SEND_REPORTS && DISABLE_SUSPEND_ACCOUNTS && DISABLE_LIMIT_ACCOUNTS) {
+    console.warn('All actions are disabled. No actions will be taken.');
+  }
 
   const masto = createStreamingAPIClient({
     streamingApiUrl: streamingApiUrl,
@@ -64,29 +79,45 @@ async function main() {
   for await (const event of masto.public.subscribe()) {
     switch (event.event) {
       case "update": {
-        console.info("New post: ", event.payload.content);
-
         for (const { check, signatureName } of signatures) {
-          const { isSpam, reason } = check(event.payload);
+          const { id: postId } = event.payload;
+          const { isSpam, reason, actions } = check(event.payload);
           if (isSpam) {
-            console.error(`Spam detected\u0007🚨: ${signatureName} ${reason} ${JSON.stringify(event.payload)}`);
+            const actionsToTake = Object.entries(actions)
+              .filter(([_, value]) => value)
+              .map(([key]) => key)
+              .join(', ');
 
-            rest.v1.reports.create({
-              accountId: event.payload.account.id,
-              statusIds: [event.payload.id],
-              comment: `spam detected by ${reason}`,
-              category: 'spam',
-              forward: true,
-            });
+            console.error(`[${postId}] Spam detected\u0007🚨: ${signatureName} ${reason} (Actions: ${actionsToTake}) -- ${JSON.stringify(event.payload)}`);
 
-            rest.v1.admin.accounts.$select(event.payload.account.id).action.create(
-              { type: 'suspend' }
-            );
+            if (actions.sendReport && !DISABLE_SEND_REPORTS) {
+              const report = await rest.v1.reports.create({
+                accountId: event.payload.account.id,
+                statusIds: [event.payload.id],
+                comment: `spam detected by ${reason}`,
+                category: 'spam',
+                forward: true,
+              });
+              console.log(`[${postId}] Created report: ${report.id}`);
+            }
+
+            if (actions.suspendAccount && !DISABLE_SUSPEND_ACCOUNTS) {
+              await rest.v1.admin.accounts.$select(event.payload.account.id).action.create(
+                { type: 'suspend' }
+              );
+              console.log(`[${postId}] Account suspended: ${event.payload.account.id}`);
+            } else if (actions.limitAccount && DISABLE_LIMIT_ACCOUNTS) {
+              await rest.v1.admin.accounts.$select(event.payload.account.id).action.create(
+                { type: 'silence' }
+              );
+              console.log(`[${postId}] Account limited / silenced: ${event.payload.account.id}`);
+            }
 
             break;
           }
         }
       }
+
       default: {
         break;
       }

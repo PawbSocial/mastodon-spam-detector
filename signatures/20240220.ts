@@ -1,10 +1,11 @@
 import masto from "masto";
+import { SignatureResponse } from "../types/signatureDefinition";
 
 /**
  * This signature detects a spam pattern where avatar ends with /missing.png,
  * mentions > 2, followingCount = 0, and followersCount = 0.
  */
-export default function (status: masto.mastodon.streaming.UpdateEvent['payload']): { isSpam: boolean; reason?: string } {
+export default function (status: masto.mastodon.streaming.UpdateEvent['payload']): SignatureResponse {
   const mentions = status.mentions.length;
   const avatar = status.account.avatar;
   const followingCount = status.account.followingCount;
@@ -22,5 +23,9 @@ export default function (status: masto.mastodon.streaming.UpdateEvent['payload']
   return {
     isSpam,
     reason: isSpam ? reason : undefined,
+    actions: {
+      sendReport: true,
+      limitAccount: true,
+    }
   };
 }
